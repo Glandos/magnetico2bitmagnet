@@ -44,7 +44,21 @@ def decode_with_fallback(byte_sequence, encodings=('utf-8', 'shift_jis', 'euc_jp
     return byte_sequence.decode('utf-8', errors='replace')
 
 
-def insert_torrent_content(pg_cursor, torrents):    
+def insert_torrent_content(pg_cursor, torrents, copy_manager=None):
+    if copy_manager is not None:
+        copy_manager.copy(
+            [
+                (
+                    torrent[1],
+                    b"[]",
+                    *[datetime.fromtimestamp(torrent[5])] * 2,
+                    [(torrent[1].hex(), [1])],
+                )
+                for torrent in torrents
+            ]
+        )
+        return
+
     sql_command = ("INSERT INTO torrent_contents (info_hash, languages, created_at, updated_at, tsv) "
                    "VALUES %s ON CONFLICT DO NOTHING")
     try:
@@ -242,6 +256,15 @@ def process_magnetico_database(
             "torrents_torrent_sources",
             ("source", "info_hash", "published_at", "created_at", "updated_at"),
         )
+        # This requires a recent version of pgcopy
+        if hasattr(pgcopy.copy, 'tsvector_formatter'):
+            content_copy_manager = pgcopy.CopyManager(
+                pg_cursor.connection,
+                "torrent_contents",
+                ("info_hash", "languages", "created_at", "updated_at", "tsv"),
+            )
+        else:
+            content_copy_manager = None
     else:
         tqdm.write("[INFO]|[Perf]: pgcopy isn't available, insertion will be slower")
         file_copy_manager = source_copy_manager = content_copy_manager = None
@@ -323,7 +346,7 @@ def process_magnetico_database(
 
                 insert_torrent_source(pg_cursor, source_name, inserted, source_copy_manager)
                 if insert_content:
-                    insert_torrent_content(pg_cursor, inserted)
+                    insert_torrent_content(pg_cursor, inserted, content_copy_manager)
             finally:
                 pbar.update(batch_size)
             offset += batch_size
